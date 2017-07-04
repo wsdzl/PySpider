@@ -106,7 +106,9 @@ class Spider(object):
 
     def __init__(self, url, deep=7, threads=20, dbname='data.db', keyword=None):
         if not url.startswith('http://') and not url.startswith('https://'):
-            url = 'http://%s/' % url
+            url = 'http://%s' % url
+        while url.endswith('/'):
+            url = url[:-1]
         parsed = urllib.urlparse(url)
         self.host = parsed.netloc.split('@')[-1].split(':')[0]
         ext = os.path.splitext(parsed.path)[1]
@@ -120,6 +122,7 @@ class Spider(object):
         self.lock = Lock()
         self.queue = [(url, ext, 0)]
         self.seen = set()
+        self.seen.add(url)
         self.count = 0
         
     def get_page(self, url, _filter=True, dom=True):
@@ -127,12 +130,12 @@ class Spider(object):
         with self.lock:
             self.count += 1
             count = self.count
-        _log.info('( %s ) URL: %s starting to handle' % (count, url))
+        _log.info('No.%s URL: %s starting to handle' % (count, url))
         if _filter:
             if _filter == True:
                 _filter = self._filter
             if ext in _filter:
-                _log.debug('( %s ) URL: %s skipping download' % (count, url))
+                _log.debug('No.%s URL: %s skipping download' % (count, url))
                 exit()
                 return
         result = request_url(url, save_as=self.db.get_writer(url,self.keyword))
@@ -140,15 +143,13 @@ class Spider(object):
             _log.warning(result[0])
             return
         else:
-            _log.debug('( %s ) URL: %s has been downloaded' % (count, url))
-        with self.lock:
-            self.seen.add(url)
+            _log.debug('No.%s URL: %s has been downloaded' % (count, url))
         if deep == self.deep:
-            _log.debug('( %s ) URL: %s skipping parse' % (count, url))
+            _log.debug('No.%s URL: %s skipping parse' % (count, url))
             return
         mime = result[1]
         if mime and not mime.startswith('text/html'):
-            _log.debug('( %s ) URL: %s skipping parse' % (count, url))
+            _log.debug('No.%s URL: %s skipping parse' % (count, url))
             return
         links = set(AnchorParser(result[2], url, result[3])())
         for link in links:
