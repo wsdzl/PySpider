@@ -127,7 +127,6 @@ class Spider(object):
         with self.lock:
             self.count += 1
             count = self.count
-        count = '%d/%d' % (count, len(self.queue))
         _log.info('( %s ) URL: %s starting to handle' % (count, url))
         if _filter:
             if _filter == True:
@@ -167,6 +166,7 @@ class Spider(object):
             if link not in self.seen:
                 with self.lock:
                     if link not in self.seen:
+                        self.seen.add(link)
                         _log.debug('LINK: found link %s' % link)
                         self.queue.append((link, _ext, deep+1))
 
@@ -178,14 +178,9 @@ class Spider(object):
                     del self.queue[0]
                 self.pool.add(self.get_page,(url, _filter, dom))
             elif not self.pool.running():
-                print(3)
                 with self.lock, self.pool._lock:
                     flag = False
-                    print(4)
                     if not (len(self.pool.tasks) or len(self.queue) or self.pool.running()):
-                        print(self.pool.tasks)
-                        print(self.queue)
-                        print(self.pool.workers)
                         flag = True
                 if flag:
                     self.pool.close()
