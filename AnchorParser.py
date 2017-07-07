@@ -5,7 +5,16 @@ from urllib.request import urljoin
 import chardet
 import re
 
-__all__ = ('AnchorParser',)
+__all__ = ('AnchorParser', 'get_charset')
+_re = re.compile(b'''<meta.+['"]?.*;?\s*charset=['"]?(\S+)['"]''')
+
+def get_charset(data):
+    rst = _re.findall(data)
+    if rst:
+        charset = rst[0].decode('ascii')
+    else:
+        charset = chardet.detect(data)['encoding']
+    return charset
 
 class AnchorParser(HTMLParser):
 
@@ -22,10 +31,14 @@ class AnchorParser(HTMLParser):
             try:
                 html = html.decode(charset)
             except:
-                try:
-                    html = self.str_decode(html)
-                except Exception as e:
-                    # raise e
+                charset = get_charset(html)
+                if charset:
+                    try:
+                        html = html.decode(charset, 'ignore')
+                    except Exception as e:
+                        # raise e
+                        html = ''
+                else:
                     html = ''
         self.html = html
 
@@ -33,19 +46,6 @@ class AnchorParser(HTMLParser):
     def __call__(self):
         self.feed(self.html)
         return self.data
-
-    # 解码二进制html数据
-    @staticmethod
-    def str_decode(data):
-        _re = re.compile(b'''<meta.+['"]?.*;?\s*charset=['"]?(\S+)['"]''')
-        rst = _re.findall(data)
-        retval = ''
-        try:
-            retval = data.decode(rst[0].decode('ascii'), 'ignore')
-        except:
-            charset = chardet.detect(data)['encoding']
-            if charset: retval = data.decode(charset, 'ignore')
-        return retval
 
     def handle_starttag(self, tag, attrs):
         if tag != 'a': # 仅解析a标签

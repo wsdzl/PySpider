@@ -23,6 +23,13 @@ class DbHandler(object):
         self.conn = sqlite3.connect(self._dbname, check_same_thread=False)
         self.lock = _t.Lock()
 
+    # 关闭数据库链接，初始化类
+    def close(self):
+        self.conn.close()
+        cls = type(self)
+        cls._instance = None
+        cls._dbname = 'data.db'
+
     # 改变数据库，注意在实例化对象之前使用本方法，否则
     # 需要重新实例化对象
     # dbname str 数据库文件名

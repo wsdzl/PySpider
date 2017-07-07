@@ -12,12 +12,12 @@ from gzip import GzipFile
 from io import BytesIO
 from SqliteThreadSafe import DbHandler, sqlite3
 from ThreadPool import Pool, Lock
-from AnchorParser import AnchorParser
+from AnchorParser import AnchorParser, get_charset
 
 _help = '''
 Usage: spider.py [-u url] [-d deep] [-f logfile] [-l loglevel(1-5)]
                  [--thread number] [--dbfile filepath]
-                 [--key="<keyword>"] [--testself]
+                 [--key="<keyword>"] [--pridomain/-p] [--testself]
 Options: 
     -h, --help         查看帮助信息。
     -u url             指定爬虫开始地址，必选参数。
@@ -27,6 +27,7 @@ Options:
     --thread number    指定线程池大小，多线程爬取页面，可选参数，默认为20。
     --dbfile filepath  存放结果数据到指定的数据库（sqlite）文件中，可选参数，默认为data.db。
     --key="<keyword>"  页面内的关键词，获取满足该关键词的网页，可选参数，默认为所有页面。
+    --pridomain/-p     仅爬行主域名，可选参数，默认爬行主域名及所有子域名链接。
     --testself         程序自测，可选参数。
 '''
 
@@ -71,7 +72,7 @@ class _db(DbHandler):
             keyword = ''
         return self.Writer(self, url, keyword)
 
-def request_url(url, fn=None, save_as=None):
+def request_url(url, fn=None, save_as=None, keyword=''):
     if not save_as:
         assert fn
         save_as = open
@@ -96,8 +97,6 @@ def request_url(url, fn=None, save_as=None):
         ce = r.headers.get('Content-Encoding')
         if ce == 'gzip':
             data = GzipFile(fileobj=BytesIO(data)).read()
-        with f:
-            f.write(data)
         ct = r.headers.get('Content-type')
         charset = None
         if ct:
@@ -109,6 +108,19 @@ def request_url(url, fn=None, save_as=None):
                 else:
                     charset = None
             ct = ct[0]
+        if not charset:
+            charset = get_charset(data)
+        has_key = True
+        if keyword:
+            if charset:
+                keyword = keyword.encode(charset)
+            else:
+                keyword = keyword.encode('utf-8')
+            if data.find(keyword) == -1:
+                has_key = False
+        if has_key:
+            with f:
+                f.write(data)
         retval = ('ok', ct, data, charset)
     except Exception as e:
         # raise e
@@ -120,7 +132,7 @@ class Spider(object):
     _filter = {'.css', '.js', '.jpg', '.jpeg', '.jpe', '.gif', '.bmp',
                '.exe', '.avi', '.rmvb', '.mp4', '.mp3', '.wav'}
 
-    def __init__(self, url, deep=7, threads=20, dbname='data.db', keyword=None):
+    def __init__(self, url, deep=7, threads=20, dbname='data.db', keyword=None, pridomain=False):
         if not url.startswith('http://') and not url.startswith('https://'):
             url = 'http://%s' % url
         while url.endswith('/'):
@@ -131,6 +143,7 @@ class Spider(object):
         if not ext:
             ext = '.html'
         self.dom = '.'.join(self.host.split('.')[-2:])
+        self.pridomain = pridomain
         self.deep = deep
         self.pool = Pool(threads)
         self.db = _db(parsed.netloc, dbname)
@@ -141,7 +154,7 @@ class Spider(object):
         self.seen.add(url)
         self.count = 0
         
-    def get_page(self, url, _filter=True, dom=True):
+    def get_page(self, url, _filter):
         url, ext, deep = url
         with self.lock:
             self.count += 1
@@ -154,7 +167,8 @@ class Spider(object):
                 _log.debug('No.%s URL: %s skipping download' % (count, url))
                 exit()
                 return
-        result = request_url(url, save_as=self.db.get_writer(url,self.keyword))
+        keyword = self.keyword if deep > 0 else None
+        result = request_url(url, save_as=self.db.get_writer(url,keyword), keyword=keyword)
         if result[0][0] == '*':
             _log.warning(result[0])
             return
@@ -173,13 +187,16 @@ class Spider(object):
             _ext = os.path.splitext(parsed.path)[1]
             if not _ext:
                 _ext = '.html'
-            if dom and link.startswith('http'):
-                if dom == True:
-                    dom = self.dom
+            if link.startswith('http'):
                 host = parsed.netloc.split('@')[-1].split(':')[0]
-                if not host.endswith(dom):
-                    _log.debug('LINK: discarded link %s' % link)
-                    continue
+                if self.pridomain:
+                    if host != self.host:
+                        _log.debug('LINK: discarded link %s' % link)
+                        continue
+                else:
+                    if not host.endswith(self.dom):
+                        _log.debug('LINK: discarded link %s' % link)
+                        continue
             if link not in self.seen:
                 with self.lock:
                     if link not in self.seen:
@@ -187,21 +204,34 @@ class Spider(object):
                         _log.debug('LINK: found link %s' % link)
                         self.queue.append((link, _ext, deep+1))
 
-    def run(self, _filter=True, dom=True):
-        while True:
-            if len(self.queue):
-                with self.lock:
-                    url = self.queue[0]
-                    del self.queue[0]
-                self.pool.add(self.get_page,(url, _filter, dom))
-            elif not self.pool.running():
-                with self.lock, self.pool._lock:
-                    flag = False
-                    if not (len(self.pool.tasks) or len(self.queue) or self.pool.running()):
-                        flag = True
-                if flag:
-                    self.pool.close()
-                    break
+    def run(self, _filter=True):
+        try:
+            while True:
+                if len(self.queue):
+                    with self.lock:
+                        url = self.queue[0]
+                        del self.queue[0]
+                    self.pool.add(self.get_page,(url, _filter))
+                elif not self.pool.running():
+                    with self.lock, self.pool._lock:
+                        flag = False
+                        if not (len(self.pool.tasks) or len(self.queue) or self.pool.running()):
+                            flag = True
+                    if flag:
+                        self.pool.close()
+                        break
+        except KeyboardInterrupt as e:
+            with self.lock, self.pool._lock:
+                self.pool.close()
+                self.pool.tasks.clear()
+                for i in self.pool.workers: i.kill()
+                self.queue.clear()
+            while not all(map(lambda x:x.done, self.pool.workers)):
+                pass
+            self.db.close()
+            _log.warning('*** ERROR: KeyboardInterrupt')
+            exit(1)
+        self.db.close()
 
 def _setlog(loglevel=5, filename='spider.log'):
     loglevels = [_log.CRITICAL, _log.ERROR, _log.WARNING, _log.INFO, _log.DEBUG, _log.NOTSET]
@@ -232,7 +262,7 @@ def main():
         exit()
     try:
         opts, args = getopt.getopt(sys.argv[1:],
-            'hu:d:f:l:', ['help', 'testself', 'thread=', 'dbfile=', 'key='])
+            'hpu:d:f:l:', ['help', 'pridomain', 'testself', 'thread=', 'dbfile=', 'key='])
     except getopt.GetoptError as e:
         print('Error:', e)
         print('Use -h or --help for more information.')
@@ -257,14 +287,11 @@ def main():
     dbfile = _getopt(opts, '--dbfile', str, 'data.db')
     keyword = _getopt(opts, '--key', str, None)
     testself = _getopt(opts, '--testself', lambda x:not x, False)
+    pridomain = ('-p' in opts or '--pridomain' in opts)
     if testself:
         print('...............ok.................')
         exit()
-    spider = Spider(start_url, deep, thread, dbfile, keyword)
+    spider = Spider(start_url, deep, thread, dbfile, keyword, pridomain)
     spider.run()
 if __name__ == '__main__':
     main()
-    
-
-    # text = urllib.urlopen('http://www.baidu.com').read()
-    # print(AnchorParser(text)())
