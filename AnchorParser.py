@@ -24,7 +24,8 @@ class AnchorParser(HTMLParser):
             except:
                 try:
                     html = self.str_decode(html)
-                except:
+                except Exception as e:
+                    # raise e
                     html = ''
         self.html = html
 
@@ -33,16 +34,18 @@ class AnchorParser(HTMLParser):
         self.feed(self.html)
         return self.data
 
+    # 解码二进制html数据
     @staticmethod
     def str_decode(data):
         _re = re.compile(b'''<meta.+['"]?.*;?\s*charset=['"]?(\S+)['"]''')
         rst = _re.findall(data)
-        if rst:
-            return data.decode(rst[0].decode('ascii'))
-        charset = chardet.detect(data)['encoding']
-        if charset:
-            return data.decode(charset)
-        return ''
+        retval = ''
+        try:
+            retval = data.decode(rst[0].decode('ascii'), 'ignore')
+        except:
+            charset = chardet.detect(data)['encoding']
+            if charset: retval = data.decode(charset, 'ignore')
+        return retval
 
     def handle_starttag(self, tag, attrs):
         if tag != 'a': # 仅解析a标签

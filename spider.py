@@ -8,6 +8,8 @@ import getopt
 import logging as _log
 from string import printable
 from urllib import request as urllib
+from gzip import GzipFile
+from io import BytesIO
 from SqliteThreadSafe import DbHandler, sqlite3
 from ThreadPool import Pool, Lock
 from AnchorParser import AnchorParser
@@ -78,9 +80,22 @@ def request_url(url, fn=None, save_as=None):
     else:
         f = save_as(fn, 'wb')
     try:
+        headers = {
+                'Connection': 'keep-alive',
+                'Accept': '*/*',
+                'Accept-Encoding': 'gzip',
+                'User-Agent': 'Mozilla/5.0 (X11; Linux i686)\
+                      AppleWebKit/537.36 (KHTML, like Gecko)\
+                      Chrome/35.0.1916.153 Safari/537.36',
+                'Accept-Language': 'zh-CN,zh;q=0.8,en;q=0.6',
+            }
         url = urllib.quote(url, safe=printable)
-        r = urllib.urlopen(url)
+        req = urllib.Request(url, headers=headers)
+        r = urllib.urlopen(req, timeout=5)
         data = r.read()
+        ce = r.headers.get('Content-Encoding')
+        if ce == 'gzip':
+            data = GzipFile(fileobj=BytesIO(data)).read()
         with f:
             f.write(data)
         ct = r.headers.get('Content-type')
@@ -96,6 +111,7 @@ def request_url(url, fn=None, save_as=None):
             ct = ct[0]
         retval = ('ok', ct, data, charset)
     except Exception as e:
+        # raise e
         retval = (('*** ERROR: bad URL "%s": %s' % (url, e)), None)
     return retval
 
