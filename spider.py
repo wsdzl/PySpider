@@ -16,20 +16,60 @@ from AnchorParser import AnchorParser, get_charset
 
 _help = '''
 Usage: spider.py [-u url] [-d deep] [-f logfile] [-l loglevel(1-5)]
-                 [--thread number] [--dbfile filepath]
-                 [--key="<keyword>"] [--pridomain/-p] [--testself]
+                 [--thread number] [--dbfile filepath] [--key="<keyword>"]
+                 [--pridomain/-p] [--download/-D] [--testself]
 Options: 
     -h, --help         查看帮助信息。
     -u url             指定爬虫开始地址，必选参数。
     -d deep            指定爬虫深度，可选参数，默认为7。
     -f logfile         保存日志到指定文件，可选参数，默认为spider.log。
     -l loglevel(1-5)   日志记录文件记录详细程度，数字越大记录越详细，可选参数，默认为5。
-    --thread number    指定线程池大小，多线程爬取页面，可选参数，默认为20。
+    --thread number    指定线程池大小，多线程爬取页面，可选参数，默认为10。
     --dbfile filepath  存放结果数据到指定的数据库（sqlite）文件中，可选参数，默认为data.db。
     --key="<keyword>"  页面内的关键词，获取满足该关键词的网页，可选参数，默认为所有页面。
     --pridomain/-p     仅爬行主域名，可选参数，默认爬行主域名及所有子域名链接。
+    --download/-D      下载网站所有资源到本地文件夹，可选参数。
     --testself         程序自测，可选参数。
 '''
+
+class _file(object):
+
+    save_dir = '.'
+
+    def __init__(self, url, keyword):
+        parsed = urllib.urlparse(url)
+        host = parsed.netloc.split('@')[-1].split(':')[0]
+        path = '.' + os.path.sep + parsed.path.replace('/', os.path.sep)
+        path = os.path.join('.', self.save_dir, host, path)
+        path = os.path.realpath(path)
+        path, ext = os.path.splitext(path)
+        query = '_' + parsed.query if parsed.query else ''
+        if not ext:
+            path = os.path.join(path, 'index%s.html' % query)
+        else:
+            path = '%s%s%s' % (path, query, ext)
+        dirname = os.path.dirname(path)
+        if os.path.isfile(dirname):
+            dirname += '_'
+        try:
+            if not os.path.isdir(dirname):
+                os.makedirs(dirname)
+            self.f = open(path, 'wb')
+            with open(path + '.info', 'w') as f:
+                data = 'URL: %s\r\nKEYWORD: %s' % (url, keyword)
+                f.write(data)
+        except Exception as e:
+            raise e
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.f.close()
+
+    def write(self, html):
+        self.f.write(html)
 
 class _db(DbHandler):
     def __init__(self, host, dbname=None):
@@ -44,11 +84,12 @@ class _db(DbHandler):
         self.execute(sql)
 
     class Writer(object):
-        def __init__(self, db, url, keyword):
+        def __init__(self, db, url, keyword, save_to_file=False):
             self.db = db
             self.table = db.table
             self.url = url
             self.keyword = keyword
+            self.save_to_file = save_to_file
 
         def __enter__(self):
             return self
@@ -57,6 +98,9 @@ class _db(DbHandler):
             pass
 
         def write(self, html):
+            if self.save_to_file:
+                with _file(self.url,self.keyword) as f:
+                    f.write(html)
             with self.db.lock:
                 cursor = self.db.conn.cursor()
                 cursor.execute("insert into '%s' (url,keyword,html) values(?,?,?)" % self.table,
@@ -67,10 +111,10 @@ class _db(DbHandler):
                     )
                 self.db.conn.commit()
             cursor.close()
-    def get_writer(self, url, keyword):
-        if keyword==None:
+    def get_writer(self, url, keyword, save_to_file=False):
+        if keyword == None:
             keyword = ''
-        return self.Writer(self, url, keyword)
+        return self.Writer(self, url, keyword, save_to_file)
 
 def request_url(url, fn=None, save_as=None, keyword=''):
     if not save_as:
@@ -132,7 +176,7 @@ class Spider(object):
     _filter = {'.css', '.js', '.jpg', '.jpeg', '.jpe', '.gif', '.bmp',
                '.exe', '.avi', '.rmvb', '.mp4', '.mp3', '.wav'}
 
-    def __init__(self, url, deep=7, threads=20, dbname='data.db', keyword=None, pridomain=False):
+    def __init__(self, url, deep=7, threads=20, dbname='data.db', keyword=None, pridomain=False, download=False):
         if not url.startswith('http://') and not url.startswith('https://'):
             url = 'http://%s' % url
         while url.endswith('/'):
@@ -143,11 +187,12 @@ class Spider(object):
         if not ext:
             ext = '.html'
         self.dom = '.'.join(self.host.split('.')[-2:])
-        self.pridomain = pridomain
         self.deep = deep
         self.pool = Pool(threads)
         self.db = _db(parsed.netloc, dbname)
         self.keyword = keyword
+        self.pridomain = pridomain
+        self.download = download
         self.lock = Lock()
         self.queue = [(url, ext, 0)]
         self.seen = set()
@@ -168,7 +213,7 @@ class Spider(object):
                 exit()
                 return
         keyword = self.keyword if deep > 0 else None
-        result = request_url(url, save_as=self.db.get_writer(url,keyword), keyword=keyword)
+        result = request_url(url, save_as=self.db.get_writer(url,keyword,self.download), keyword=keyword)
         if result[0][0] == '*':
             _log.warning(result[0])
             return
@@ -181,7 +226,7 @@ class Spider(object):
         if mime and not mime.startswith('text/html'):
             _log.debug('No.%s URL: %s skipping parse' % (count, url))
             return
-        links = set(AnchorParser(result[2], url, result[3])())
+        links = set(AnchorParser(result[2], url, result[3], self.download)())
         for link in links:
             parsed = urllib.urlparse(link)
             _ext = os.path.splitext(parsed.path)[1]
@@ -240,11 +285,12 @@ def _setlog(loglevel=5, filename='spider.log'):
                      datefmt='%Y-%m-%d %H:%M:%S',
                      filename=filename,
                      filemode='a')
-    console = _log.StreamHandler()
-    console.setLevel(loglevels[loglevel])
-    formatter = _log.Formatter('%(asctime)s %(message)s')
-    console.setFormatter(formatter)
-    _log.getLogger('').addHandler(console)
+    if filename:
+        console = _log.StreamHandler()
+        console.setLevel(loglevels[loglevel])
+        formatter = _log.Formatter('%(asctime)s %(message)s')
+        console.setFormatter(formatter)
+        _log.getLogger('').addHandler(console)
     # _log.debug('This is debug message')
     # _log.info('This is info message')
     # _log.warning('This is warning message')
@@ -262,7 +308,7 @@ def main():
         exit()
     try:
         opts, args = getopt.getopt(sys.argv[1:],
-            'hpu:d:f:l:', ['help', 'pridomain', 'testself', 'thread=', 'dbfile=', 'key='])
+            'hDpu:d:f:l:', ['help', 'download', 'pridomain', 'testself', 'thread=', 'dbfile=', 'key='])
     except getopt.GetoptError as e:
         print('Error:', e)
         print('Use -h or --help for more information.')
@@ -271,27 +317,31 @@ def main():
     if '-h' in opts or '--help' in opts:
         print(_help)
         exit()
+    testself = '--testself' in opts
     if '-u' in opts:
         start_url = opts['-u']
         if start_url[0:7].lower() != 'http://':
             start_url = 'http://' + start_url
-    else:
+    elif not testself:
         print('Error: option -u must not be null')
         print('Use -h or --help for more information.')
         exit(1)
     deep = _getopt(opts, '-d', int, 7)
     logfile = _getopt(opts, '-f', str, 'spider.log')
     loglevel = _getopt(opts, '-l', int, 5)
-    _setlog(loglevel, logfile)
-    thread = _getopt(opts, '--thread', int, 20)
+    thread = _getopt(opts, '--thread', int, 10)
     dbfile = _getopt(opts, '--dbfile', str, 'data.db')
     keyword = _getopt(opts, '--key', str, None)
-    testself = _getopt(opts, '--testself', lambda x:not x, False)
     pridomain = ('-p' in opts or '--pridomain' in opts)
+    download = ('-D' in opts or '--download' in opts)
     if testself:
-        print('...............ok.................')
+        _setlog(5, '')
+        spider = Spider('www.baidu.com', 0, 1, 'testself.db', '', True, False)
+        spider.run()
+        _log.info('!!!ok!!!')
         exit()
-    spider = Spider(start_url, deep, thread, dbfile, keyword, pridomain)
-    spider.run()
+    _setlog(loglevel, logfile)
+    spider = Spider(start_url, deep, thread, dbfile, keyword, pridomain, download)
+    spider.run(not download)
 if __name__ == '__main__':
     main()

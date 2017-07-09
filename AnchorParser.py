@@ -21,8 +21,9 @@ class AnchorParser(HTMLParser):
     # 初始化
     # html str/bytes 要解析的html
     # url  str       html页面url，用于合并链接，可选参数
-    def __init__(self, html, url=None, charset=None):
+    def __init__(self, html, url=None, charset=None, static_res=False):
         super().__init__()
+        self.static_res = static_res
         self.data = []
         self.url = url
         if type(html) == bytes:
@@ -48,10 +49,11 @@ class AnchorParser(HTMLParser):
         return self.data
 
     def handle_starttag(self, tag, attrs):
-        if tag != 'a': # 仅解析a标签
+        if (not self.static_res) and (tag != 'a'):
             return
+        prop = ('href', 'src')
         for attr in attrs:
-            if attr[0] == 'href':
+            if attr[0] in prop:
                 link = attr[1]
                 if link.startswith('mailto:') or link.startswith('javascript:'):
                     return # 跳过mailto和javascript链接
@@ -68,5 +70,5 @@ class AnchorParser(HTMLParser):
 if __name__ == '__main__':
     url = 'http://www.baidu.com'
     from urllib.request import urlopen as uo
-    parser = AnchorParser(uo(url).read(), url)
+    parser = AnchorParser(uo(url).read(), url, static_res=True)
     print(parser())
